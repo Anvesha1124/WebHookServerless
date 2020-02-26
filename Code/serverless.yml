@@ -1,0 +1,78 @@
+service: mailgunWebhook
+
+
+provider:
+  name: aws
+  endpointType: REGIONAL
+  runtime: nodejs12.x
+  stage: dev
+  region: us-east-1
+  timeout: 10
+  environment:
+    WEBHOOK_TABLE: ${self:service}-${opt:stage, self:provider.stage}
+    StreamArn: 'arn:aws:sns:us-east-1:127960264419:ReCeeve_Webhook'
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:GetRecords
+        - dynamodb:GetShardIterator
+        - dynamodb:DescribeStream
+        - dynamodb:ListStreams
+        - execute-api:*
+        - apigateway:* 
+        - SNS:Publish
+        - lambda:InvokeFunction
+      Resource: "*"
+
+
+functions:
+  mailgunWebhook:
+    handler: api/webhook.delivered
+    memorySize: 128
+    Description: configure wehook to the configured mailgun domain
+    events:
+      - http:
+          path: delivered
+          method: any
+          cors: true
+          integration: lambda
+          request:
+            passThrough: WHEN_NO_TEMPLATES
+            template:
+              application/json: $input.json('$')
+      - http:
+          path: opened
+          method: any
+          cors: true
+          integration: lambda
+          request:
+            passThrough: WHEN_NO_TEMPLATES
+            template:
+              application/json: $input.json('$')        
+                         
+resources:
+  Resources:
+    WebHookDynamoDbTable:
+      Type: 'AWS::DynamoDB::Table'
+      Properties:
+        AttributeDefinitions: 
+        - 
+          AttributeName: "messageId"
+          AttributeType: "S"        
+                          
+        KeySchema:
+          -
+            AttributeName: "messageId"
+            KeyType: "HASH"
+         
+        ProvisionedThroughput:
+           ReadCapacityUnits: 1
+           WriteCapacityUnits: 1
+        TableName: ${self:provider.environment.WEBHOOK_TABLE}   
+            
+
+
