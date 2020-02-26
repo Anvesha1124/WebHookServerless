@@ -10,7 +10,7 @@ provider:
   timeout: 10
   environment:
     WEBHOOK_TABLE: ${self:service}-${opt:stage, self:provider.stage}
-    StreamArn: 'arn:aws:sns:us-east-1:127960264419:ReCeeve_Webhook'
+    StreamArn: 'arn:aws:sns:xxxxxxxx:xxxxxxxxxx:ReCeeve_Webhook'
   iamRoleStatements:
     - Effect: Allow
       Action:
