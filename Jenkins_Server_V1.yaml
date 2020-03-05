@@ -1,0 +1,472 @@
+Parameters:
+  SSHKey:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+  PublicSubnet1: 
+    Description: "The first public subnet where the Jenkins EC2 instance, ELB and CodeDeploy Web Servers will be launched"
+    Type: AWS::EC2::Subnet::Id
+    ConstraintDescription: "Must be a valid Public VPC Subnet."
+  PublicSubnet2: 
+    Description: "The second public subnet where the ELB and CodeDeploy Web Servers will be launched"
+    Type: AWS::EC2::Subnet::Id
+    ConstraintDescription: "Must be a valid Public VPC Subnet."
+  InstanceCount : 
+    Description : "Number of CodeDeploy Web Server EC2 instances"
+    Type : Number
+    Default : 3
+    ConstraintDescription : "Must be a number between 2 and 4."
+    MinValue : "2"
+    MaxValue : "4"
+  VpcId: 
+    Description: "The VPC Id where the EC2 instances will be launched."
+    Type: AWS::EC2::VPC::Id
+    ConstraintDescription: "must be the name of an existing VPC."
+  CodedeployInstanceType:
+    Description: "EC2 instance type for  CodeDeploy Web Servers"
+    Type: String
+    Default: "t2.micro"
+    ConstraintDescription: "must be a valid EC2 instance type."
+  CodeBuildProject : 
+    Type : String
+    Description : "Enter the project name of the CodeBuild"
+
+Mappings: 
+  AWSRegionArch2AMI: 
+      ap-northeast-1  : 
+        AMI : "ami-08847abae18baa040" 
+      ap-northeast-2  : 
+        AMI : "ami-012566705322e9a8e" 
+      ap-south-1        : 
+        AMI : "ami-00b6a8a2bd28daf19" 
+      ap-southeast-1  : 
+        AMI : "ami-01da99628f381e50a" 
+      ap-southeast-2    :  
+        AMI : "ami-00e17d1165b9dd3ec" 
+      eu-central-1  : 
+        AMI : "ami-0f5dbc86dd9cbf7a8" 
+      eu-west-1  : 
+        AMI : "ami-0bdb1d6c15a40392c" 
+      eu-west-2  : 
+        AMI : "ami-e1768386" 
+      eu-west-3   : 
+        AMI : "ami-06340c8c12baa6a09" 
+      sa-east-1  : 
+        AMI : "ami-0ad7b0031d41ed4b9" 
+      us-east-1  : 
+        AMICD :  "ami-08bc77a2c7eb2b1da"
+        AMIJK :  "ami-062f7200baf2fa504"
+      us-east-2   :
+        AMI : "ami-0cf31d971a3ca20d6" 
+      us-west-1  :
+        AMI : "ami-0782017a917e973e7" 
+      us-west-2  : 
+        AMI : "ami-6cd6f714"     
+Resources:
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          -
+           Effect: Allow
+           Principal:
+            Service:
+              - codebuild.amazonaws.com
+           Action: 
+             - sts:AssumeRole
+      Path : "/"       
+  CodeBuildRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "CodeBuildRole"
+      PolicyDocument: 
+        Statement:
+          - 
+           Effect: Allow
+           Action:
+             - "logs:CreateLogGroup"
+             - "logs:CreateLogStream"
+             - "logs:PutLogEvents"
+             - "s3:GetObject"
+             - "s3:GetObjectVersion"
+             - "s3:PutObject"
+           Resource: "*"
+      Roles:
+        - Ref: "CodeBuildRole"
+  CodBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties: 
+      Name: !Ref CodeBuildProject
+      Description: "Adidas CodeBuild Project"
+      ServiceRole: 
+        Fn::GetAtt: ["CodeBuildRole", Arn]
+      Artifacts:
+        EncryptionDisabled: true
+        Location: !Ref CodeDeployBucket      
+        Name: "codebuild-artifact.zip"
+        Packaging: "ZIP"
+        Type: S3
+      Environment:
+        Type: "LINUX_CONTAINER"
+        ComputeType: "BUILD_GENERAL1_SMALL"
+        Image: "aws/codebuild/ubuntu-base:14.04"
+      Source:
+        Location: 
+          Fn::Join:
+            - ""
+            - 
+             -
+              Ref: "CodeDeployBucket"
+             - "/test"
+        Type: S3           
+  DemoApplication: 
+    Type: AWS::CodeDeploy::Application 
+  DemoFleet:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:  
+      ApplicationName: !Ref DemoApplication
+      AutoScalingGroups: 
+        - !Ref WSASG
+      Deployment: 
+        Description: "Initial Deployment"
+        Revision: 
+          RevisionType: S3
+          S3Location: 
+            Bucket: !Sub 'aws-codedeploy-${AWS::Region}'
+            BundleType: "zip"
+            Key: "samples/latest/SampleApp_Linux.zip"
+      DeploymentConfigName: "CodeDeployDefault.OneAtATime"
+      ServiceRoleArn: 
+        Fn::GetAtt: ["CodeDeployTrustRole", Arn] 
+  WSASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties: 
+      LaunchConfigurationName: 
+        Ref: "WSLaunchConfiguration"
+      VPCZoneIdentifier: 
+        - Ref : "PublicSubnet1"
+          Ref : "PublicSubnet2"
+      MinSize: '0'
+      MaxSize: '4'
+      DesiredCapacity:
+        Ref : "InstanceCount"
+      LoadBalancerNames: 
+        - Ref : "ELB"
+      HealthCheckType: "ELB"
+      HealthCheckGracePeriod: 600
+      Tags: 
+        - Key : "Name"
+          Value: "CodeDeployDemo"
+          PropagateAtLaunch: true 
+    CreationPolicy: 
+      ResourceSignal: 
+        Count: 
+          Ref: "InstanceCount" 
+        Timeout: "PT15M"
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '1'
+  WSLaunchConfiguration: 
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [AWSRegionArch2AMI, !Ref "AWS::Region","AMICD"]
+      InstanceType:
+        Ref: CodedeployInstanceType
+      SecurityGroups: 
+        - Ref: "WSSG"
+      UserData: 
+        Fn::Base64: !Sub |
+           #!/bin/bash -xe
+           sudo apt-get update
+           sudo apt install ruby -y
+           sudo apt install -y wget
+           sudo wget https://aws-codedeploy-${AWS::Region}.s3.amazonaws.com/latest/install          
+           sudo chmod +x ./install
+           sudo ./install auto
+           sudo apt-get install default-jre -y
+           sudo apt-get install default-jdk -y
+           sudo apt install apache2 -y
+           sudo apt install tomcat8 -y           
+           # Start cfn-init
+           /opt/aws/bin/cfn-init -s ${AWS::StackId} -r WSLaunchConfiguration --region ${AWS::Region}
+           # Signal the status from cfn-init
+           /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource WSASG --region ${AWS::Region} 
+      KeyName: 
+        Ref: "SSHKey"
+      IamInstanceProfile:
+        Ref: "CodeDeployInstanceProfile"
+      AssociatePublicIpAddress: true
+    Metadata: 
+      AWS::CloudFormation::Init:
+          services:
+            sysvinit:
+              codedeploy-agent:
+                enabled: true
+                ensureRunning: true
+  CodeBuildBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration: 
+        Status: Enabled              
+  JenkinsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodeBuildBucket
+      PolicyDocument:
+        Statement:
+          Sid: "IPAllow"
+          Effect: "Allow"
+          Action: 
+           - "s3:Get*"
+           - "s3:List*"
+          Resource:
+            Fn::Join: 
+              - ""
+              - 
+                - "arn:aws:s3:::"
+                - 
+                  Ref: "CodeBuildBucket"
+                - "/*"    
+          Principal: "*"
+          Condition:
+            IpAddress:
+             aws:SourceIp :
+                Fn::Join:
+                 - ""
+                 -
+                  - Fn::GetAtt: ["JenkinServer","PublicIp"]
+                  - "/24"              
+  ELB: 
+    Type: "AWS::ElasticLoadBalancing::LoadBalancer"
+    Properties:
+      HealthCheck:
+        HealthyThreshold: "2"
+        Interval: "30"
+        Target: "HTTP:80/"
+        Timeout: "5"
+        UnhealthyThreshold: "5"
+      Listeners: 
+        - InstancePort: "80"
+          LoadBalancerPort: "80"
+          Protocol: "HTTP"
+          InstanceProtocol: "HTTP"
+      Subnets: 
+        - 
+         Ref : "PublicSubnet1"
+         Ref : "PublicSubnet2"
+      SecurityGroups: 
+        - 
+         Ref: "ELBSG"
+  ELBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Enable HTTP access from anywhere"
+      VpcId: 
+        Ref : "VpcId"
+      SecurityGroupIngress: 
+        - IpProtocol: "tcp"   
+          FromPort: "80"
+          ToPort : "80"
+          CidrIp: "0.0.0.0/0"
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Statement:
+          - 
+           Effect: Allow
+           Principal:
+             Service:
+               - ec2.amazonaws.com
+           Action: 
+             - sts:AssumeRole               
+      Path: "/"
+  CodeDeployTrustRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2008-10-17"
+        Statement:
+          -
+           Sid: "1"
+           Effect: Allow
+           Principal:
+             Service: 
+               - codedeploy.amazonaws.com
+           Action: 
+              - sts:AssumeRole
+      Path: "/" 
+  CodeDeployRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties: 
+      PolicyName: CodeDeployPolicy
+      PolicyDocument :
+        Statement:
+          -
+           Effect: Allow
+           Action:
+             - ec2:Describe*
+             - autoscaling:CompleteLifecycleAction
+             - autoscaling:DeleteLifecycleHook
+             - autoscaling:DescribeLifecycleHooks
+             - autoscaling:DescribeAutoScalingGroups
+             - autoscaling:PutLifecycleHook
+             - autoscaling:RecordLifecycleActionHeartbeat
+             - Tag:getResources
+             - Tag:getTags
+             - Tag:getTagsForResource
+             - Tag:getTagsForResourceList
+           Resource: "*"
+      Roles: 
+        - Ref: "CodeDeployTrustRole"                             
+  CodeDeployInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - 
+          Ref: "InstanceRole"
+  InstanceRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "InstanceRole"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - 
+           Effect: "Allow"
+           Action: 
+              - "autoscaling:Describe"
+              - "cloudformation:Describe*"
+              - "cloudformation:GetTemplate"
+              - "s3:Get*"
+              - "s3:List*"              
+           Resource: "*"
+      Roles: 
+        - Ref: "InstanceRole"
+  WSSG:
+   Type: AWS::EC2::SecurityGroup
+   Properties:
+     GroupDescription: "Enable HTTP access from ELB"
+     VpcId: 
+       Ref: "VpcId"
+     SecurityGroupIngress:
+       -
+        IpProtocol: "tcp"
+        FromPort: "22"
+        ToPort: "22"
+        CidrIp: "0.0.0.0/0"
+       -
+        IpProtocol: "tcp"
+        FromPort: "80"
+        ToPort: "80"
+        SourceSecurityGroupId: 
+          Ref: "ELBSG"
+  JenkinServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [AWSRegionArch2AMI, !Ref "AWS::Region","AMIJK"]
+      InstanceType: !Ref CodedeployInstanceType
+      NetworkInterfaces:
+        -
+         AssociatePublicIpAddress: true
+         DeviceIndex: 0
+         GroupSet: 
+           -
+            Ref: "SSHSecurityGroup"
+         SubnetId:
+           Ref: "PublicSubnet1"   
+      KeyName: !Ref SSHKey
+      IamInstanceProfile: !Ref JenkinsInstanceProfile
+      Tags:
+        - Key: "Name"
+          Value: "Jenkins Server" 
+      UserData: 
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash 
+            # Get the latest CloudFormation package
+            yum update -y aws-cfn-bootstrap
+            sudo yum update -y
+            sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+            sudo rpm --import https://pkg.jenkins.io/redhat/jenkins.io.key
+            sudo yum install java-1.8.0 -y
+            sudo yum install git -y
+            sudo yum install jenkins -y
+            sudo service jenkins start
+            # Start cfn-init
+            /opt/aws/bin/cfn-init -s ${AWS::StackId} -r JenkinServer --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+  JenkinsRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Statement:
+          - 
+           Effect: Allow
+           Principal:
+             Service:
+               - ec2.amazonaws.com
+           Action: 
+             - sts:AssumeRole               
+      Path: "/"       
+  JenkinsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - 
+          Ref: "JenkinsRole"
+  JenkinsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "JenkinsPolicy"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - 
+           Effect: "Allow"
+           Action: 
+              - "s3:GetObject"
+              - "s3:GetObjectVersion"
+              - "s3:PutObject"
+              - "s3:DeleteObject"
+              - "codedeploy:ListApplications"
+              - "codedeploy:ListDeploymentGroups"
+              - "codedeploy:RegisterApplicationRevision"
+              - "codedeploy:CreateDeployment"
+              - "codedeploy:GetDeploymentConfig"
+              - "codedeploy:GetApplicationRevision"
+              - "codedeploy:GetDeployment"
+           Resource: "*"
+      Roles: 
+        - Ref: "JenkinsRole"
+  CodeDeployBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      VersioningConfiguration: 
+        Status: "Enabled"      
+  SSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH and HTTP access from specific CIDR block
+      VpcId:
+        Ref: "VpcId"
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: 22
+        IpProtocol: tcp
+        ToPort: 22
+      - CidrIp: 0.0.0.0/0
+        FromPort: 80
+        IpProtocol: tcp
+        ToPort: 80  
+      - CidrIp: 0.0.0.0/0
+        FromPort: 8080
+        IpProtocol: tcp
+        ToPort: 8080
+      SecurityGroupEgress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: 0
+        IpProtocol: tcp
+        ToPort: 65535  
