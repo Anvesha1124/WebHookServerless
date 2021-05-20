@@ -1,0 +1,115 @@
+version: 2.1
+commands:
+
+  install_python3:
+    description: "Install Python3"
+    steps:
+      - run:
+          name: Install Python3
+          command: |
+            sudo apt update && sudo apt upgrade -y && sudo apt install dnsutils -y
+            sudo apt install python3
+            sudo apt install python3-venv         
+  install_aws_cli:
+    description: "Install AWS CLI"
+    steps:
+      - run:
+          name: Install AWS CLI
+          command: |
+            python3 -m venv ~/venv
+            . ~/venv/bin/activate
+            pip install --upgrade pip
+            pip install awscli        
+  install_terraform_12:
+    description: "Install Terraform"
+    steps:
+      - run:
+          name: Install Terraform and Terraform Provider
+          command: |
+            chmod +x ci/helpers/install_terraform.sh
+            ./ci/helpers/install_terraform.sh "0.12.26"        
+  install_npm:
+    description: "Install npm"
+    steps:
+      - run:
+          name: Install NPM
+          command: |
+            curl -sL https://deb.nodesource.com/setup_12.x | sudo -E bash -
+            sudo apt-get install -y nodejs
+            sudo npm install npm@6.14.x -g
+
+defaultsJDK: &defaultsJDK
+  docker:
+    - image: cimg/openjdk:14.0
+  resource_class: large
+  working_directory: ~/monorepo-builds
+
+defaultsPython: &defaultsPython
+  docker:
+    - image: cimg/python:3.7
+  resource_class: large
+  working_directory: ~/monorepo-builds
+
+
+
+jobs:
+  
+    steps:
+      - checkout
+   
+
+      - run:
+          name: Initialize project metadata and hash projects
+          command: |
+            mkdir -p .project-metadata
+            mkdir -p .project-metadata-cache
+            for i in `ls | grep "^[0-9]"`
+            do
+               hash_file=.project-metadata-cache/.$i""_hash""
+               touch $hash_file
+               echo "Content of: $hash_file"
+               cat $hash_file
+               echo
+               git log --pretty=format:'%H' -n 1 -- $i > $hash_file.new
+            done
+
+          key: v1-project-metadata-{{ .Branch }}-{{ epoch }}
+          paths:
+            - .project-metadata-cache
+  
+  
+  build-and-deploy-grafana:
+    <<: *defaultsJDK
+    parameters:
+      environment:
+        type: string
+        default: ""
+    steps:
+      - checkout: { path: ~/monorepo-builds }
+      - setup_remote_docker
+      - install_python3
+      - attach_workspace: { at: . }
+      - install_aws_cli
+      - install_terraform_12
+      - run:
+          name: Build app and upload Dockerfiles
+          command: |
+              bash commands that you want to run
+      
+            
+
+ 
+workflows:
+  version: 2.1
+  #GENERAL JOBS     
+  pac_workflow:
+    jobs:
+      - 
+      - build-and-deploy-grafana:
+          name: Grafana
+          environment: infra
+          filters:
+            branches:
+              only:
+                - /infra.*/
+
